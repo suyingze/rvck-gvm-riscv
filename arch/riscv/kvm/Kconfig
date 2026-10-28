@@ -39,4 +39,28 @@ config KVM
 
 	  If unsure, say N.
 
+config KVM_DSM_IRQ_FORWARD
+	bool "KVM DSM interrupt forwarding support"
+	depends on KVM
+	default n
+	help
+	  Provide support for GiantVM DSM interrupt forwarding.
+	  When enabled on RISC-V, guest SBI IPI requests exit to
+	  userspace via KVM_EXIT_DSM_SEND_IRQ so a distributed runtime
+	  can route and reinject them on another QEMU/KVM instance.
+
+config KVM_DSM
+	bool
+	depends on KVM
+
+config KVM_DSM_TCP
+	bool "KVM distributed shared memory over TCP"
+	depends on KVM && INET
+	select KVM_DSM
+	default n
+	help
+	  Enable the TCP transport and Ivy page-coherence protocol used by
+	  GiantVM distributed shared memory.  The initial RISC-V port does not
+	  include the optional RDMA transport.
+
 endif # VIRTUALIZATION

@@ -52,13 +52,23 @@ static int kvm_sbi_ext_v01_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 			hmask = (1UL << atomic_read(&kvm->online_vcpus)) - 1;
 		if (utrap->scause)
 			break;
-
 		for_each_set_bit(i, &hmask, BITS_PER_LONG) {
 			rvcpu = kvm_get_vcpu_by_id(vcpu->kvm, i);
 			ret = kvm_riscv_vcpu_set_interrupt(rvcpu, IRQ_VS_SOFT);
 			if (ret < 0)
 				break;
 		}
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+		if (!ret) {
+			vcpu->stat.ecall_exit_stat++;
+			run->exit_reason = KVM_EXIT_DSM_SEND_IRQ;
+			run->dsm_riscv_ipi.vcpu_id = vcpu->vcpu_id;
+			run->dsm_riscv_ipi.hart_mask = hmask;
+			run->dsm_riscv_ipi.hart_base = 0;
+			run->dsm_riscv_ipi.pad = 0;
+			retdata->uexit = true;
+		}
+#endif
 		break;
 	case SBI_EXT_0_1_SHUTDOWN:
 		kvm_riscv_vcpu_sbi_system_reset(vcpu, run,

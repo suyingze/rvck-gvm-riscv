@@ -40,3 +40,5 @@ kvm-y += vcpu_timer.o
 kvm-y += vcpu_vector.o
 kvm-y += vm.o
 kvm-y += vmid.o
+kvm-$(CONFIG_KVM_DSM) += dsm.o dsm-util.o dsm-rmap.o ivy.o
+kvm-$(CONFIG_KVM_DSM_TCP) += ktcp.o

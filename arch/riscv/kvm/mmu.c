@@ -13,6 +13,11 @@
 #include <linux/vmalloc.h>
 #include <linux/kvm_host.h>
 #include <linux/sched/signal.h>
+
+#ifdef CONFIG_KVM_DSM
+#include "dsm.h"
+#endif
+
 #include <asm/kvm_mmu.h>
 #include <asm/kvm_nacl.h>
 
@@ -34,6 +39,34 @@ static void mmu_wp_memory_region(struct kvm *kvm, int slot)
 	spin_unlock(&kvm->mmu_lock);
 	kvm_flush_remote_tlbs_memslot(kvm, memslot);
 }
+
+#ifdef CONFIG_KVM_DSM
+void kvm_riscv_gstage_set_dsm_access(struct kvm *kvm, gfn_t gfn,
+				     unsigned long dsm_access)
+{
+	gpa_t gpa = gfn << PAGE_SHIFT;
+	struct kvm_gstage gstage = {
+		.kvm = kvm,
+		.flags = 0,
+		.vmid = READ_ONCE(kvm->arch.vmid.vmid),
+		.pgd = kvm->arch.pgd,
+	};
+
+	spin_lock(&kvm->mmu_lock);
+	switch (dsm_access) {
+	case DSM_INVALID:
+	case DSM_MODIFIED:
+		kvm_riscv_gstage_unmap_range(&gstage, gpa, PAGE_SIZE, false);
+		break;
+	case DSM_SHARED:
+		kvm_riscv_gstage_wp_range(&gstage, gpa, gpa + PAGE_SIZE);
+		break;
+	default:
+		break;
+	}
+	spin_unlock(&kvm->mmu_lock);
+}
+#endif
 
 int kvm_riscv_mmu_ioremap(struct kvm *kvm, gpa_t gpa, phys_addr_t hpa,
 			  unsigned long size, bool writable, bool in_atomic)
@@ -153,6 +186,32 @@ void kvm_arch_commit_memory_region(struct kvm *kvm,
 				const struct kvm_memory_slot *new,
 				enum kvm_mr_change change)
 {
+#ifdef CONFIG_KVM_DSM
+	if (kvm->arch.dsm_enabled) {
+		int ret;
+
+		if ((change == KVM_MR_DELETE || change == KVM_MR_MOVE) && old)
+			kvm_dsm_remove_memslot(kvm, old);
+
+		if ((change == KVM_MR_CREATE || change == KVM_MR_MOVE) &&
+		    new && kvm_dsm_memslot_is_ram(new)) {
+			ret = kvm_dsm_register_memslot_hva(kvm,
+					(struct kvm_memory_slot *)new,
+					new->npages);
+			if (ret)
+				kvm_err("DSM register memslot %d failed: %d\n",
+					new->id, ret);
+			else {
+				ret = kvm_dsm_add_memslot(kvm,
+					(struct kvm_memory_slot *)new, 0);
+				if (ret)
+					kvm_err("DSM add memslot %d failed: %d\n",
+						new->id, ret);
+			}
+		}
+	}
+#endif
+
 	/*
 	 * At this point memslot has been committed and there is an
 	 * allocated dirty_bitmap[], dirty pages will be tracked while
@@ -503,6 +562,11 @@ int kvm_riscv_mmu_map(struct kvm_vcpu *vcpu, struct kvm_memory_slot *memslot,
 			!(memslot->flags & KVM_MEM_READONLY)) ? true : false;
 	unsigned long vma_pagesize, mmu_seq;
 	struct kvm_gstage gstage;
+#ifdef CONFIG_KVM_DSM
+	int dsm_access = KVM_DSM_ACCESS_RW;
+	bool dsm_acquired = false;
+	struct kvm_memory_slot *dsm_memslot = memslot;
+#endif
 
 	gstage.kvm = kvm;
 	gstage.flags = 0;
@@ -536,6 +600,13 @@ int kvm_riscv_mmu_map(struct kvm_vcpu *vcpu, struct kvm_memory_slot *memslot,
 	if (logging || (vma->vm_flags & VM_PFNMAP))
 		vma_pagesize = PAGE_SIZE;
 
+#ifdef CONFIG_KVM_DSM
+	if (kvm->arch.dsm_enabled && kvm_dsm_memslot_is_ram(memslot)) {
+		vma_pageshift = PAGE_SHIFT;
+		vma_pagesize = PAGE_SIZE;
+	}
+#endif
+
 	if (vma_pagesize == PMD_SIZE || vma_pagesize == PUD_SIZE)
 		gfn = (gpa & huge_page_mask(hstate_vma(vma))) >> PAGE_SHIFT;
 
@@ -557,14 +628,27 @@ int kvm_riscv_mmu_map(struct kvm_vcpu *vcpu, struct kvm_memory_slot *memslot,
 		return -EFAULT;
 	}
 
+#ifdef CONFIG_KVM_DSM
+	if (kvm->arch.dsm_enabled && kvm_dsm_memslot_is_ram(memslot)) {
+		dsm_access = kvm_dsm_vcpu_acquire_page(vcpu, &dsm_memslot,
+						       gfn, is_write);
+		if (dsm_access < 0)
+			return dsm_access;
+		dsm_acquired = true;
+	}
+#endif
+
 	hfn = gfn_to_pfn_prot(kvm, gfn, is_write, &writable);
 	if (hfn == KVM_PFN_ERR_HWPOISON) {
 		send_sig_mceerr(BUS_MCEERR_AR, (void __user *)hva,
 				vma_pageshift, current);
-		return 0;
+		ret = 0;
+		goto out_release_dsm;
 	}
-	if (is_error_noslot_pfn(hfn))
-		return -EFAULT;
+	if (is_error_noslot_pfn(hfn)) {
+		ret = -EFAULT;
+		goto out_release_dsm;
+	}
 
 	/*
 	 * If logging is active then we allow writable pages only
@@ -578,8 +662,16 @@ int kvm_riscv_mmu_map(struct kvm_vcpu *vcpu, struct kvm_memory_slot *memslot,
 	if (mmu_invalidate_retry(kvm, mmu_seq))
 		goto out_unlock;
 
+	/* DSM ownership is tracked per 4 KiB page; never promote it to a THP. */
+#ifdef CONFIG_KVM_DSM
+	if (dsm_acquired && !(dsm_access & KVM_DSM_ACCESS_WRITE))
+		writable = false;
+
+	if (!dsm_acquired && !logging && vma_pagesize == PAGE_SIZE)
+#else
 	/* Check if we are backed by a THP and thus use block mapping if possible */
 	if (!logging && (vma_pagesize == PAGE_SIZE))
+#endif
 		vma_pagesize = transparent_hugepage_adjust(kvm, memslot, hva, &hfn, &gpa);
 
 	if (writable) {
@@ -599,6 +691,11 @@ out_unlock:
 	spin_unlock(&kvm->mmu_lock);
 	kvm_set_pfn_accessed(hfn);
 	kvm_release_pfn_clean(hfn);
+out_release_dsm:
+#ifdef CONFIG_KVM_DSM
+	if (dsm_acquired)
+		kvm_dsm_vcpu_release_page(vcpu, dsm_memslot, gfn);
+#endif
 	return ret;
 }
 

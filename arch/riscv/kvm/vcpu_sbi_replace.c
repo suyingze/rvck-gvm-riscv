@@ -42,6 +42,19 @@ const struct kvm_vcpu_sbi_extension vcpu_sbi_ext_time = {
 	.handler = kvm_sbi_ext_time_handler,
 };
 
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+static void dsm_ipi_forward(struct kvm_vcpu *vcpu, struct kvm_run *run,
+			    unsigned long hmask, unsigned long hbase)
+{
+	vcpu->stat.ecall_exit_stat++;
+	run->exit_reason = KVM_EXIT_DSM_SEND_IRQ;
+	run->dsm_riscv_ipi.vcpu_id = vcpu->vcpu_id;
+	run->dsm_riscv_ipi.hart_mask = hmask;
+	run->dsm_riscv_ipi.hart_base = hbase;
+	run->dsm_riscv_ipi.pad = 0;
+}
+#endif
+
 static int kvm_sbi_ext_ipi_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 				   struct kvm_vcpu_sbi_return *retdata)
 {
@@ -51,7 +64,10 @@ static int kvm_sbi_ext_ipi_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	struct kvm_cpu_context *cp = &vcpu->arch.guest_context;
 	unsigned long hmask = cp->a0;
 	unsigned long hbase = cp->a1;
-	unsigned long hart_bit = 0, sentmask = 0;
+	unsigned long hart_bit = 0;
+#ifndef CONFIG_KVM_DSM_IRQ_FORWARD
+	unsigned long sentmask = 0;
+#endif
 
 	if (cp->a6 != SBI_EXT_IPI_SEND_IPI) {
 		retdata->err_val = SBI_ERR_NOT_SUPPORTED;
@@ -72,13 +88,22 @@ static int kvm_sbi_ext_ipi_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 		ret = kvm_riscv_vcpu_set_interrupt(tmp, IRQ_VS_SOFT);
 		if (ret < 0)
 			break;
+#ifndef CONFIG_KVM_DSM_IRQ_FORWARD
 		sentmask |= 1UL << hart_bit;
+#endif
 		kvm_riscv_vcpu_pmu_incr_fw(tmp, SBI_PMU_FW_IPI_RCVD);
 	}
 
 done:
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+	if (!ret) {
+		dsm_ipi_forward(vcpu, run, hmask, hbase);
+		retdata->uexit = true;
+	}
+#else
 	if (hbase != -1UL && (hmask ^ sentmask))
 		retdata->err_val = SBI_ERR_INVALID_PARAM;
+#endif
 
 	return ret;
 }

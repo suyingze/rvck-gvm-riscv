@@ -12,6 +12,7 @@
 #include <linux/types.h>
 #include <linux/kvm.h>
 #include <linux/kvm_types.h>
+#include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <asm/hwcap.h>
 #include <asm/kvm_aia.h>
@@ -83,6 +84,11 @@ struct kvm_vcpu_stat {
 struct kvm_arch_memory_slot {
 };
 
+#ifdef CONFIG_KVM_DSM
+struct kvm_dsm_memslots;
+struct ktcp_cb;
+#endif
+
 struct kvm_arch {
 	/* G-stage vmid */
 	struct kvm_vmid vmid;
@@ -94,8 +100,28 @@ struct kvm_arch {
 	/* Guest Timer */
 	struct kvm_guest_timer timer;
 
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+	/* Cross-host timer offset is derived once from a source guest-time sample. */
+	spinlock_t dsm_timer_lock;
+	bool dsm_timer_synced;
+#endif
+
 	/* AIA Guest/VM context */
 	struct kvm_aia aia;
+
+#ifdef CONFIG_KVM_DSM
+	/* TCP/Ivy DSM state, adapted from the ARM GVM implementation. */
+	bool dsm_enabled;
+	u32 dsm_id;
+	struct kvm_dsm_memslots *dsm_hvaslots;
+	struct mutex dsm_lock;
+	struct mutex conn_init_lock;
+	struct task_struct *dsm_thread;
+	struct ktcp_cb **dsm_conn_socks;
+	bool dsm_stopped;
+	u32 cluster_iplist_len;
+	char **cluster_iplist;
+#endif
 };
 
 struct kvm_cpu_trap {

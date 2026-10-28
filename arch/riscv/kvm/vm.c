@@ -12,6 +12,11 @@
 #include <linux/uaccess.h>
 #include <linux/kvm_host.h>
 #include <asm/kvm_mmu.h>
+#include <asm/timex.h>
+
+#ifdef CONFIG_KVM_DSM
+#include "dsm.h"
+#endif
 
 const struct _kvm_stats_desc kvm_vm_stats_desc[] = {
 	KVM_GENERIC_VM_STATS()
@@ -42,6 +47,14 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 		return r;
 	}
 
+#ifdef CONFIG_KVM_DSM
+	r = kvm_dsm_alloc(kvm);
+	if (r) {
+		kvm_riscv_gstage_free_pgd(kvm);
+		return r;
+	}
+#endif
+
 	kvm_riscv_aia_init_vm(kvm);
 
 	kvm_riscv_guest_timer_init(kvm);
@@ -52,6 +65,10 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 void kvm_arch_destroy_vm(struct kvm *kvm)
 {
 	kvm_destroy_vcpus(kvm);
+
+#ifdef CONFIG_KVM_DSM
+	kvm_dsm_free(kvm);
+#endif
 
 	kvm_riscv_aia_destroy_vm(kvm);
 }
@@ -191,6 +208,11 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_SET_GUEST_DEBUG:
 		r = 1;
 		break;
+#ifdef CONFIG_KVM_DSM
+	case KVM_CAP_RISCV_DSM:
+		r = 1;
+		break;
+#endif
 	case KVM_CAP_NR_VCPUS:
 		r = min_t(unsigned int, num_online_cpus(), KVM_MAX_VCPUS);
 		break;
@@ -211,7 +233,143 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	return r;
 }
 
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+static int kvm_riscv_dsm_ipi(struct kvm *kvm, struct kvm_dsm_riscv_ipi *params)
+{
+	int ret = 0;
+	unsigned long i;
+	unsigned long hmask = params->hart_mask;
+	unsigned long hbase = params->hart_base;
+	unsigned long hart_bit = 0;
+	struct kvm_vcpu *vcpu;
+
+	if (params->hart_base == ~0ULL)
+		hbase = -1UL;
+
+	kvm_for_each_vcpu(i, vcpu, kvm) {
+		if (hbase != -1UL) {
+			if (vcpu->vcpu_id < hbase)
+				continue;
+			hart_bit = vcpu->vcpu_id - hbase;
+			if (hart_bit >= BITS_PER_LONG)
+				continue;
+			if (!(hmask & BIT(hart_bit)))
+				continue;
+		}
+
+		ret = kvm_riscv_vcpu_set_interrupt(vcpu, IRQ_VS_SOFT);
+		if (ret < 0)
+			break;
+	}
+
+	return ret;
+}
+
+static int kvm_riscv_dsm_hsm_start(struct kvm *kvm,
+				   struct kvm_dsm_riscv_hsm *params)
+{
+	struct kvm_cpu_context *reset_cntx;
+	struct kvm_vcpu *target_vcpu;
+	u64 old_time_delta;
+	u64 new_time_delta;
+	u64 host_cycles;
+	u64 guest_cycles;
+	bool timer_synced_now = false;
+	int ret = 0;
+
+	target_vcpu = kvm_get_vcpu_by_id(kvm, params->target_vcpu_id);
+	if (!target_vcpu)
+		return -EINVAL;
+
+#ifdef CONFIG_KVM_DSM
+	ret = kvm_dsm_sync_remote_gpa(kvm, params->opaque,
+				      params->source_dsm_id);
+	if (ret)
+		return ret;
+#endif
+
+	spin_lock(&target_vcpu->arch.mp_state_lock);
+
+	if (!kvm_riscv_vcpu_stopped(target_vcpu)) {
+		ret = -EALREADY;
+		goto out;
+	}
+
+	host_cycles = get_cycles64();
+	spin_lock(&kvm->arch.dsm_timer_lock);
+	old_time_delta = kvm->arch.timer.time_delta;
+	if (!kvm->arch.dsm_timer_synced) {
+		/*
+		 * The source and target host counters have unrelated origins.
+		 * Rebase the source guest-time snapshot onto this host's counter.
+		 * Synchronize once per VM so later HSM starts cannot move time
+		 * backwards because of network-latency jitter.
+		 */
+		new_time_delta = params->guest_cycles - host_cycles;
+		WRITE_ONCE(kvm->arch.timer.time_delta, new_time_delta);
+		kvm->arch.dsm_timer_synced = true;
+		timer_synced_now = true;
+	}
+	guest_cycles = host_cycles + kvm->arch.timer.time_delta;
+	spin_unlock(&kvm->arch.dsm_timer_lock);
+
+	if (timer_synced_now)
+		pr_info("kvm-riscv-dsm: timer sync source_guest_cycles=%llu old_time_delta=%lld new_time_delta=%lld\n",
+			params->guest_cycles, (s64)old_time_delta,
+			(s64)kvm->arch.timer.time_delta);
+
+	pr_info("kvm-riscv-dsm: hsm receive source=%u target=%u host_cycles=%llu guest_cycles=%llu source_guest_cycles=%llu time_delta=%lld synced_now=%u\n",
+		params->vcpu_id, params->target_vcpu_id, host_cycles,
+		guest_cycles, params->guest_cycles,
+		(s64)kvm->arch.timer.time_delta, timer_synced_now);
+
+	reset_cntx = &target_vcpu->arch.guest_reset_context;
+	reset_cntx->sepc = params->start_addr;
+	reset_cntx->a0 = params->target_vcpu_id;
+	reset_cntx->a1 = params->opaque;
+	kvm_make_request(KVM_REQ_VCPU_RESET, target_vcpu);
+
+	__kvm_riscv_vcpu_power_on(target_vcpu);
+
+out:
+	spin_unlock(&target_vcpu->arch.mp_state_lock);
+	return ret;
+}
+#endif
+
 int kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
 {
-	return -EINVAL;
+#if defined(CONFIG_KVM_DSM) || defined(CONFIG_KVM_DSM_IRQ_FORWARD)
+	struct kvm *kvm = filp->private_data;
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+	void __user *argp = (void __user *)arg;
+#endif
+
+	switch (ioctl) {
+#ifdef CONFIG_KVM_DSM
+	case KVM_DSM_ENABLE:
+	case KVM_DSM_MEMCPY:
+	case KVM_DSM_MEMPIN:
+		return kvm_vm_ioctl_dsm(kvm, ioctl, arg);
+#endif
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+	case KVM_DSM_IPI: {
+		struct kvm_dsm_riscv_ipi params;
+
+		if (copy_from_user(&params, argp, sizeof(params)))
+			return -EFAULT;
+		return kvm_riscv_dsm_ipi(kvm, &params);
+	}
+	case KVM_DSM_HSM_START: {
+		struct kvm_dsm_riscv_hsm params;
+
+		if (copy_from_user(&params, argp, sizeof(params)))
+			return -EFAULT;
+		return kvm_riscv_dsm_hsm_start(kvm, &params);
+	}
+#endif
+	}
+#endif
+
+	return -ENOTTY;
 }

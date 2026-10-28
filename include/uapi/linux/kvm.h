@@ -271,6 +271,10 @@ struct kvm_xen_exit {
 #define KVM_EXIT_RISCV_CSR        36
 #define KVM_EXIT_NOTIFY           37
 
+/* DSM exit reasons used by GiantVM RISC-V forwarding. */
+#define KVM_EXIT_DSM_SEND_IRQ     45
+#define KVM_EXIT_DSM_HSM_START    46
+
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
 #define KVM_INTERNAL_ERROR_EMULATION	1
@@ -283,6 +287,27 @@ struct kvm_xen_exit {
 
 /* Flags that describe what fields in emulation_failure hold valid data. */
 #define KVM_INTERNAL_ERROR_EMULATION_FLAG_INSTRUCTION_BYTES (1ULL << 0)
+
+struct kvm_dsm_riscv_ipi {
+	__u32 vcpu_id;
+	__u32 pad;
+	__u64 hart_mask;
+	__u64 hart_base;
+};
+
+struct kvm_dsm_riscv_hsm {
+	__u32 vcpu_id;
+	__u32 target_vcpu_id;
+	__u32 source_dsm_id;
+	__u32 pad;
+	__u64 start_addr;
+	__u64 opaque;
+	/* Guest counter value sampled by the source host. */
+	__u64 guest_cycles;
+};
+
+#define KVM_DSM_IPI _IOW(KVMIO, 0xf3, struct kvm_dsm_riscv_ipi)
+#define KVM_DSM_HSM_START _IOW(KVMIO, 0xf4, struct kvm_dsm_riscv_hsm)
 
 /* for KVM_RUN, returned by mmap(vcpu_fd, offset=0) */
 struct kvm_run {
@@ -307,6 +332,10 @@ struct kvm_run {
 	__u64 psw_addr; /* psw lower half */
 #endif
 	union {
+		/* KVM_EXIT_DSM_SEND_IRQ */
+		struct kvm_dsm_riscv_ipi dsm_riscv_ipi;
+		/* KVM_EXIT_DSM_HSM_START */
+		struct kvm_dsm_riscv_hsm dsm_riscv_hsm;
 		/* KVM_EXIT_UNKNOWN */
 		struct {
 			__u64 hardware_exit_reason;
@@ -1196,6 +1225,7 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_COUNTER_OFFSET 227
 #define KVM_CAP_ARM_EAGER_SPLIT_CHUNK_SIZE 228
 #define KVM_CAP_ARM_SUPPORTED_BLOCK_SIZES 229
+#define KVM_CAP_RISCV_DSM 249
 
 #ifdef KVM_CAP_IRQ_ROUTING
 
@@ -1574,6 +1604,32 @@ struct kvm_s390_ucas_mapping {
 #define KVM_SET_DEVICE_ATTR	  _IOW(KVMIO,  0xe1, struct kvm_device_attr)
 #define KVM_GET_DEVICE_ATTR	  _IOW(KVMIO,  0xe2, struct kvm_device_attr)
 #define KVM_HAS_DEVICE_ATTR	  _IOW(KVMIO,  0xe3, struct kvm_device_attr)
+
+/* RISC-V GiantVM distributed shared memory (TCP/Ivy). */
+struct kvm_dsm_params {
+	__u32 dsm_id;
+	__u32 cluster_iplist_len;
+	__u64 cluster_iplist;
+};
+#define KVM_DSM_ENABLE		  _IOW(KVMIO,  0xf0, struct kvm_dsm_params)
+
+struct kvm_dsm_memcpy {
+	__u8 write;
+	__u8 pad[7];
+	__u64 host_virt_addr;
+	__u64 userspace_addr;
+	__u64 length;
+};
+#define KVM_DSM_MEMCPY		  _IOW(KVMIO,  0xf1, struct kvm_dsm_memcpy)
+
+struct kvm_dsm_mempin {
+	__u8 write;
+	__u8 unpin;
+	__u8 pad[6];
+	__u64 host_virt_addr;
+	__u64 length;
+};
+#define KVM_DSM_MEMPIN		  _IOW(KVMIO,  0xf2, struct kvm_dsm_mempin)
 
 /*
  * ioctls for vcpu fds

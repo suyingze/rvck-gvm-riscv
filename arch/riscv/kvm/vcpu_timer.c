@@ -371,4 +371,8 @@ void kvm_riscv_guest_timer_init(struct kvm *kvm)
 	riscv_cs_get_mult_shift(&gt->nsec_mult, &gt->nsec_shift);
 #endif
 	gt->time_delta = -get_cycles64();
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+	spin_lock_init(&kvm->arch.dsm_timer_lock);
+	kvm->arch.dsm_timer_synced = false;
+#endif
 }

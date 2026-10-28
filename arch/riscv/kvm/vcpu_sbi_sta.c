@@ -35,6 +35,17 @@ void kvm_riscv_vcpu_record_steal_time(struct kvm_vcpu *vcpu)
 		return;
 
 	/*
+	 * STA is a host-written shared-memory interface.  The three writes to
+	 * sequence/steal/sequence below bypass the guest G-stage fault path and
+	 * therefore cannot participate in an Ivy ownership transaction.  A DSM
+	 * page transfer between the two sequence writes can publish a permanently
+	 * odd sequence value and make the guest spin forever in
+	 * pv_time_steal_clock().  Do not touch an STA page for a distributed VM.
+	 */
+	if (vcpu->kvm->arch.dsm_enabled)
+		return;
+
+	/*
 	 * shmem is 64-byte aligned (see the enforcement in
 	 * kvm_sbi_sta_steal_time_set_shmem()) and the size of sbi_sta_struct
 	 * is 64 bytes, so we know all its offsets are in the same page.
@@ -83,6 +94,10 @@ static int kvm_sbi_sta_steal_time_set_shmem(struct kvm_vcpu *vcpu)
 	struct sbi_sta_struct zero_sta = {0};
 	gpa_t shmem;
 	int ret;
+
+	/* Host-side STA writes are not coherent with Ivy page ownership. */
+	if (vcpu->kvm->arch.dsm_enabled)
+		return SBI_ERR_NOT_SUPPORTED;
 
 	if (flags != 0)
 		return SBI_ERR_INVALID_PARAM;
@@ -139,6 +154,13 @@ static int kvm_sbi_ext_sta_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 
 static unsigned long kvm_sbi_ext_sta_probe(struct kvm_vcpu *vcpu)
 {
+	/*
+	 * Keep the optional steal-time shared page disabled until its host writes
+	 * are routed through the DSM protocol.
+	 */
+	if (vcpu->kvm->arch.dsm_enabled)
+		return 0;
+
 	return !!sched_info_on();
 }
 

@@ -12,6 +12,7 @@
 #include <linux/wordpart.h>
 #include <asm/sbi.h>
 #include <asm/kvm_vcpu_sbi.h>
+#include <asm/timex.h>
 
 static int kvm_sbi_hsm_vcpu_start(struct kvm_vcpu *vcpu)
 {
@@ -98,6 +99,32 @@ static int kvm_sbi_ext_hsm_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	switch (funcid) {
 	case SBI_EXT_HSM_HART_START:
 		ret = kvm_sbi_hsm_vcpu_start(vcpu);
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+		if (!ret) {
+			u64 host_cycles = get_cycles64();
+			u64 guest_cycles = host_cycles + vcpu->kvm->arch.timer.time_delta;
+
+			pr_info("kvm-riscv-dsm: hsm send source=%u target=%lu host_cycles=%llu guest_cycles=%llu time_delta=%lld\n",
+				vcpu->vcpu_id, cp->a0, host_cycles, guest_cycles,
+				(s64)vcpu->kvm->arch.timer.time_delta);
+			vcpu->stat.ecall_exit_stat++;
+			run->exit_reason = KVM_EXIT_DSM_HSM_START;
+			run->dsm_riscv_hsm.vcpu_id = vcpu->vcpu_id;
+			run->dsm_riscv_hsm.target_vcpu_id = cp->a0;
+			run->dsm_riscv_hsm.source_dsm_id = vcpu->kvm->arch.dsm_id;
+			run->dsm_riscv_hsm.pad = 0;
+			run->dsm_riscv_hsm.start_addr = cp->a1;
+			run->dsm_riscv_hsm.opaque = cp->a2;
+			/*
+			 * A host-local time_delta cannot be reused on another physical
+			 * machine because get_cycles64() has a different origin there.
+			 * Forward the source guest counter snapshot instead; the target
+			 * derives its own local delta from that snapshot.
+			 */
+			run->dsm_riscv_hsm.guest_cycles = guest_cycles;
+			retdata->uexit = true;
+		}
+#endif
 		break;
 	case SBI_EXT_HSM_HART_STOP:
 		ret = kvm_sbi_hsm_vcpu_stop(vcpu);

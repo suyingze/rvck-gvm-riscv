@@ -929,6 +929,18 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		/* Process CSR value returned from user-space */
 		ret = kvm_riscv_vcpu_csr_return(vcpu, vcpu->run);
 		break;
+#ifdef CONFIG_KVM_DSM_IRQ_FORWARD
+	case KVM_EXIT_DSM_SEND_IRQ:
+	case KVM_EXIT_DSM_HSM_START: {
+		struct kvm_cpu_context *cp = &vcpu->arch.guest_context;
+
+		cp->a0 = 0;
+		cp->a1 = 0;
+		cp->sepc += 4;
+		ret = 0;
+		break;
+	}
+#endif
 	default:
 		ret = 0;
 		break;
