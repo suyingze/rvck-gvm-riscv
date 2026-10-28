@@ -50,7 +50,7 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 #ifdef CONFIG_KVM_DSM
 	r = kvm_dsm_alloc(kvm);
 	if (r) {
-		kvm_riscv_gstage_free_pgd(kvm);
+		kvm_riscv_mmu_free_pgd(kvm);
 		return r;
 	}
 #endif

@@ -332,7 +332,7 @@ void kvm_dsm_remove_memslot(struct kvm *kvm, struct kvm_memory_slot *slot)
 	gfn_t gfn, gfn_end;
 	hfn_t vfn;
 	int i,bkt;
-	int nr_as = kvm_arch_nr_memslot_as_ids(kvm);
+	int nr_as = KVM_ADDRESS_SPACE_NUM;
 
 	if (!kvm->arch.dsm_enabled)
 		return;
@@ -389,7 +389,7 @@ static int kvm_dsm_register_existing_memslots(struct kvm *kvm)
 
 	mutex_lock(&kvm->slots_lock);
 
-	for (as_id = 0; as_id < kvm_arch_nr_memslot_as_ids(kvm); as_id++) {
+	for (as_id = 0; as_id < KVM_ADDRESS_SPACE_NUM; as_id++) {
 		memslots = __kvm_memslots(kvm, as_id);
 
 		kvm_for_each_memslot(slot, bkt, memslots) {
