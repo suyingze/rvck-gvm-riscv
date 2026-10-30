@@ -53,14 +53,33 @@ config KVM_DSM
 	bool
 	depends on KVM
 
+choice
+	prompt "KVM distributed shared memory transport"
+	depends on KVM
+	default KVM_DSM_TCP
+	help
+	  Select the in-kernel transport used by GiantVM distributed shared
+	  memory.  TCP and RDMA use the same Ivy coherence protocol and wire
+	  metadata, but only one transport can be linked into KVM at a time.
+
 config KVM_DSM_TCP
 	bool "KVM distributed shared memory over TCP"
 	depends on KVM && INET
 	select KVM_DSM
-	default n
 	help
 	  Enable the TCP transport and Ivy page-coherence protocol used by
-	  GiantVM distributed shared memory.  The initial RISC-V port does not
-	  include the optional RDMA transport.
+	  GiantVM distributed shared memory.
+
+config KVM_DSM_RDMA
+	bool "KVM distributed shared memory over RDMA"
+	depends on KVM && INFINIBAND_ADDR_TRANS
+	select KVM_DSM
+	help
+	  Enable the RDMA CM/verbs transport and Ivy page-coherence protocol
+	  used by GiantVM distributed shared memory.  The first RISC-V version
+	  uses reliable-connected RDMA Send/Receive messages; the existing TCP
+	  transport remains available as a separate kernel configuration.
+
+endchoice
 
 endif # VIRTUALIZATION

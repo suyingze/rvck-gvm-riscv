@@ -19,6 +19,8 @@
 #include "dsm.h"
 #ifdef USE_KTCP_NETWORK
 #include "ktcp.h"
+#elif defined(USE_KRDMA_NETWORK)
+#include "krdma.h"
 #endif
 
 #include <linux/kthread.h>
@@ -951,7 +953,7 @@ static int kvm_dsm_init(struct kvm *kvm, struct kvm_dsm_params *params)
 	network_ops.connect = krdma_connect;
 	network_ops.listen = krdma_listen;
 	network_ops.accept = krdma_accept;
-	network_ops.shutdown = NULL;
+	network_ops.shutdown = krdma_shutdown;
 	network_ops.release = krdma_release;
 	dsm_debug("%s: kvm %d use RDMA connection\n", __func__, params->dsm_id);
 #endif

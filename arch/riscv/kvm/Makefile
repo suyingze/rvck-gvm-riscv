@@ -42,3 +42,4 @@ kvm-y += vm.o
 kvm-y += vmid.o
 kvm-$(CONFIG_KVM_DSM) += dsm.o dsm-util.o dsm-rmap.o ivy.o
 kvm-$(CONFIG_KVM_DSM_TCP) += ktcp.o
+kvm-$(CONFIG_KVM_DSM_RDMA) += krdma.o

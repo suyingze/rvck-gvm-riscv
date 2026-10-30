@@ -86,7 +86,11 @@ struct kvm_arch_memory_slot {
 
 #ifdef CONFIG_KVM_DSM
 struct kvm_dsm_memslots;
+#ifdef CONFIG_KVM_DSM_RDMA
+struct krdma_cb;
+#else
 struct ktcp_cb;
+#endif
 #endif
 
 struct kvm_arch {
@@ -110,14 +114,18 @@ struct kvm_arch {
 	struct kvm_aia aia;
 
 #ifdef CONFIG_KVM_DSM
-	/* TCP/Ivy DSM state, adapted from the ARM GVM implementation. */
+	/* Ivy DSM state, adapted from the ARM GVM implementation. */
 	bool dsm_enabled;
 	u32 dsm_id;
 	struct kvm_dsm_memslots *dsm_hvaslots;
 	struct mutex dsm_lock;
 	struct mutex conn_init_lock;
 	struct task_struct *dsm_thread;
+#ifdef CONFIG_KVM_DSM_RDMA
+	struct krdma_cb **dsm_conn_socks;
+#else
 	struct ktcp_cb **dsm_conn_socks;
+#endif
 	bool dsm_stopped;
 	u32 cluster_iplist_len;
 	char **cluster_iplist;

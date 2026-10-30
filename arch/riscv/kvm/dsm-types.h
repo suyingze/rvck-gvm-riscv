@@ -10,8 +10,13 @@
 #include <linux/types.h>
 #include <linux/vmalloc.h>
 
-/* The initial RISC-V port intentionally supports only the TCP transport. */
+#if defined(CONFIG_KVM_DSM_TCP)
 #define USE_KTCP_NETWORK
+#elif defined(CONFIG_KVM_DSM_RDMA)
+#define USE_KRDMA_NETWORK
+#else
+#error "KVM DSM requires either the TCP or RDMA transport"
+#endif
 #define IVY_KVM_DSM
 #define KVM_DSM_W_SHARED
 
@@ -27,8 +32,13 @@
 #define KVM_DSM_ACCESS_WRITE	BIT(1)
 #define KVM_DSM_ACCESS_RW	(KVM_DSM_ACCESS_READ | KVM_DSM_ACCESS_WRITE)
 
+#ifdef USE_KTCP_NETWORK
 struct ktcp_cb;
 typedef struct ktcp_cb kconnection_t;
+#else
+struct krdma_cb;
+typedef struct krdma_cb kconnection_t;
+#endif
 
 /* This RISC-V tree has no hfn_t; keep the DSM HVA-page type local. */
 typedef u64 hfn_t;
