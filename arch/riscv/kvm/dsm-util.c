@@ -175,10 +175,15 @@ int dsm_trylock_backoff(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
 	/*
 	 * A DSM request thread must not immediately contend again after the
 	 * bounded trylock loop.  Without this delay, ping-ponging a page can
-	 * starve the vCPU that currently owns the per-page lock.
+	 * starve the vCPU that currently owns the per-page lock.  Keep the two
+	 * scheduling sleeps used by the validated implementation: A/B testing
+	 * showed that collapsing them to one still changes page-ping-pong
+	 * latency materially.
 	 */
-	if (ret == -EAGAIN)
+	if (ret == -EAGAIN) {
 		usleep_range(10, 10);
+		usleep_range(10, 10);
+	}
 
 	return ret;
 }
