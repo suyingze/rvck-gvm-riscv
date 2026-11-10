@@ -732,7 +732,7 @@ retry_handle_req:
 		 * request and finds whether there's some more requests.
 		 */
 		if (req.req_type != DSM_REQ_INVALIDATE) {
-			ret = dsm_trylock(slot, vfn);
+			ret = dsm_trylock_backoff(slot, vfn);
 			if (ret == -EAGAIN) {
 				srcu_read_unlock(&kvm->srcu, idx);
 				cond_resched();

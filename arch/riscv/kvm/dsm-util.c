@@ -16,7 +16,7 @@
 
 #include <linux/kvm_host.h>
 #include <linux/kvm.h>
-#include "dsm.h" /* KVM_DSM_DEBUG */
+#include "dsm.h"
 #include "dsm-util.h"
 
 #include <linux/delay.h>
@@ -132,7 +132,8 @@ void dsm_lock(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
 		return;
 
 	index = dsm_vfn_index(slot, vfn);
-	mutex_lock(&slot->vfn_dsm_state[index].lock);
+	while (!mutex_trylock(&slot->vfn_dsm_state[index].lock))
+		usleep_range(10, 10);
 }
 
 void dsm_unlock(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
@@ -165,6 +166,21 @@ int dsm_trylock(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
 	       return -EINVAL;
 
        return __kvm_dsm_trylock(&slot->vfn_dsm_state[dsm_vfn_index(slot, vfn)].lock);
+}
+
+int dsm_trylock_backoff(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
+{
+	int ret = dsm_trylock(slot, vfn);
+
+	/*
+	 * A DSM request thread must not immediately contend again after the
+	 * bounded trylock loop.  Without this delay, ping-ponging a page can
+	 * starve the vCPU that currently owns the per-page lock.
+	 */
+	if (ret == -EAGAIN)
+		usleep_range(10, 10);
+
+	return ret;
 }
 
 int kvm_dsm_connect(struct kvm *kvm, int dest_id, kconnection_t **conn_sock)

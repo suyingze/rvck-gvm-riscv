@@ -208,6 +208,7 @@ int insert_hvaslot(struct kvm_dsm_memslots *slots, int pos, hfn_t start,
 void dsm_lock(struct kvm_dsm_memory_slot *slot, hfn_t vfn);
 void dsm_unlock(struct kvm_dsm_memory_slot *slot, hfn_t vfn);
 int dsm_trylock(struct kvm_dsm_memory_slot *slot, hfn_t vfn);
+int dsm_trylock_backoff(struct kvm_dsm_memory_slot *slot, hfn_t vfn);
 
 static inline bool dsm_vfn_valid(struct kvm_dsm_memory_slot *slot, hfn_t vfn,
 				 const char *where)
