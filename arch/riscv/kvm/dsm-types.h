@@ -17,12 +17,6 @@
 #else
 #error "KVM DSM requires either the TCP or RDMA transport"
 #endif
-#define IVY_KVM_DSM
-#define KVM_DSM_W_SHARED
-
-/* Enable useful bring-up logs without enabling the expensive PF profiler. */
-#define KVM_DSM_DEBUG
-
 #define DSM_MAX_INSTANCES	16
 #define DSM_TXID_ANY		(~0U)
 #define KVM_DSM_MAX_MEMSLOTS	512
@@ -55,7 +49,6 @@ typedef struct tx_add {
 
 typedef unsigned long copyset_t;
 typedef u32 version_t;
-typedef u32 timestamp_t;
 
 struct kvm_dsm_info {
 	unsigned int state;

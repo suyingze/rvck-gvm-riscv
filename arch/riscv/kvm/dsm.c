@@ -24,16 +24,7 @@
 #endif
 
 #include <linux/kthread.h>
-#include <linux/moduleparam.h>
 #include <linux/mmu_context.h>
-
-
-#ifdef KVM_DSM_DEBUG
-bool kvm_dsm_dbg_verbose = 0;
-module_param_named(dsm_debug, kvm_dsm_dbg_verbose, bool, 0644);
-MODULE_PARM_DESC(dsm_debug,
-		 "Enable verbose RISC-V KVM DSM/Ivy transaction tracing");
-#endif
 
 static atomic_t gvm_dsm_hvaslot_miss_log_count[DSM_MAX_INSTANCES];
 static atomic_t gvm_dsm_memslot_log_count[DSM_MAX_INSTANCES];
@@ -271,14 +262,10 @@ int kvm_dsm_add_memslot(struct kvm *kvm, struct kvm_memory_slot *slot,
 		for (i = 0; i < npages; i++) {
 			new_hvaslot->vfn_dsm_state[i + (vfn - new_hvaslot->base_vfn)].state
 				= hvaslot->vfn_dsm_state[i + (gfn - gfn_iter)].state;
-#ifdef IVY_KVM_DSM
 			memcpy(new_hvaslot->vfn_dsm_state[i + (vfn -
 					new_hvaslot->base_vfn)].copyset,
 					hvaslot->vfn_dsm_state[i + (gfn - gfn_iter)].copyset,
 					sizeof(copyset_t));
-#elif defined(TARDIS_KVM_DSM)
-			/* TODO */
-#endif
 		}
 	}
 
@@ -493,11 +480,11 @@ static int __kvm_dsm_acquire_page(struct kvm *kvm,
 	}
 	// printk("dsm_lock vfn %llx, hvaslot_vfn %llx", vfn, hvaslot->base_vfn);
 
-	dsm_lock(kvm, hvaslot, vfn,NULL);
+	dsm_lock(hvaslot, vfn);
 	// printk("dsm_lock end");
 	dsm_access = kvm_dsm_page_fault(kvm, slot, gfn, is_smm, write);
 	if (dsm_access < 0) {
-		dsm_unlock(kvm, hvaslot, vfn,NULL);
+		dsm_unlock(hvaslot, vfn);
 	}
 	return dsm_access;
 }
@@ -561,7 +548,7 @@ void kvm_dsm_release_page(struct kvm *kvm, struct kvm_memory_slot *slot,
 	}
 	// printk("kvm_dsm_release_page 336");
 	dsm_unlock_fast_path(hvaslot, vfn, false);
-	dsm_unlock(kvm, hvaslot, vfn,NULL);
+	dsm_unlock(hvaslot, vfn);
 }
 
 void kvm_dsm_vcpu_release_page(struct kvm_vcpu *vcpu,
@@ -610,7 +597,7 @@ int kvm_dsm_sync_remote_gpa(struct kvm *kvm, gpa_t gpa, u32 owner)
 		goto out_srcu;
 	}
 
-	dsm_lock(kvm, hvaslot, vfn, memslot);
+	dsm_lock(hvaslot, vfn);
 	dsm_lock_fast_path(hvaslot, vfn, false);
 
 	dsm_change_state(hvaslot, vfn, DSM_INVALID);
@@ -621,7 +608,7 @@ int kvm_dsm_sync_remote_gpa(struct kvm *kvm, gpa_t gpa, u32 owner)
 	kvm_dsm_apply_access_right(kvm, hvaslot, vfn, DSM_INVALID, memslot);
 
 	dsm_unlock_fast_path(hvaslot, vfn, false);
-	dsm_unlock(kvm, hvaslot, vfn, memslot);
+	dsm_unlock(hvaslot, vfn);
 
 	/*
 	 * Fetch while the target vCPU is still stopped. Besides updating the
@@ -729,11 +716,7 @@ void kvm_dsm_vcpu_release(struct kvm_vcpu *vcpu, struct kvm_memslots *slots,
 /* DSM server functions entry. */
 static int kvm_dsm_handle_req(void *data)
 {
-#ifdef IVY_KVM_DSM
 	return ivy_kvm_dsm_handle_req(data);
-#elif defined(TARDIS_KVM_DSM)
-	return tardis_kvm_dsm_handle_req(data);
-#endif
 }
 
 /*
@@ -835,8 +818,6 @@ out_listen_sock:
 				continue;
 			get_task_comm(comm, conn->threads[i]);
 			ret = kthread_stop(conn->threads[i]);
-			dsm_debug("kvm[%d] dsm connection thread %s exited with %d",
-					kvm->arch.dsm_id, comm, ret);
 			if (ret)
 				printk(KERN_ERR "kvm[%d] dsm connection thread %s exited with %d\n",
 				       kvm->arch.dsm_id, comm, ret);
@@ -864,8 +845,6 @@ out_listen_sock:
 	if (dsm_trace_enabled())
 		kvm_dsm_report_profile(kvm);
 #endif
-	clean_couter();
-// printk("544 ,%d\n",ret);
 	return ret;
 }
 
@@ -889,8 +868,7 @@ static int kvm_dsm_init(struct kvm *kvm, struct kvm_dsm_params *params)
 	if (kvm->created_vcpus)
 		return -EBUSY;
 
-	dsm_debug("Enable kvm dsm mode, this kvm instance will be node-%u\n",
-			params->dsm_id);
+	printk(KERN_INFO "kvm-dsm: enable node-%u\n", params->dsm_id);
 
 	/* Deep copy cluster_iplist from user space. */
 	kvm->arch.cluster_iplist_len = params->cluster_iplist_len;
@@ -929,12 +907,6 @@ static int kvm_dsm_init(struct kvm *kvm, struct kvm_dsm_params *params)
 	kfree(user_cluster_iplist);
 	user_cluster_iplist = NULL;
 	mutex_init(&kvm->arch.conn_init_lock);
-#ifdef TARDIS_KVM_DSM
-	ret = tardis_kvm_dsm_init(kvm);
-	if (ret < 0) {
-		goto out_free_cluster_iplist;
-	}
-#endif
 
 #ifdef USE_KTCP_NETWORK
 	network_ops.send = ktcp_send;
@@ -944,7 +916,8 @@ static int kvm_dsm_init(struct kvm *kvm, struct kvm_dsm_params *params)
 	network_ops.accept = ktcp_accept;
 	network_ops.shutdown = ktcp_shutdown;
 	network_ops.release = ktcp_release;
-	dsm_debug("%s: kvm %d use TCP connection\n", __func__, params->dsm_id);
+	printk(KERN_INFO "kvm-dsm: node-%u use TCP connection\n",
+	       params->dsm_id);
 #endif
 
 #ifdef USE_KRDMA_NETWORK
@@ -955,7 +928,8 @@ static int kvm_dsm_init(struct kvm *kvm, struct kvm_dsm_params *params)
 	network_ops.accept = krdma_accept;
 	network_ops.shutdown = krdma_shutdown;
 	network_ops.release = krdma_release;
-	dsm_debug("%s: kvm %d use RDMA connection\n", __func__, params->dsm_id);
+	printk(KERN_INFO "kvm-dsm: node-%u use RDMA connection\n",
+	       params->dsm_id);
 #endif
 
 	kvm->arch.dsm_conn_socks = kzalloc(DSM_MAX_INSTANCES * 2 *
@@ -1027,21 +1001,11 @@ void kvm_dsm_stop(struct kvm *kvm)
 
 	printk(KERN_INFO "kvm-dsm: node-%d stopping dsm server\n",
 	       kvm->arch.dsm_id);
-#ifdef TARDIS_KVM_DSM
-	send_sig(SIGKILL, kvm->arch.expiration_timer_thread, 1);
-	ret = kthread_stop(kvm->arch.expiration_timer_thread);
-	if (ret < 0)
-		printk(KERN_ERR "%s: node-%d dsm expiration timer exited with %d\n",
-		       __func__, kvm->arch.dsm_id, ret);
-#endif
 	send_sig(SIGKILL, thread, 1);
 	ret = kthread_stop(thread);
 	if (ret < 0)
 		printk(KERN_ERR "%s: node-%d dsm root server exited with %d\n",
 		       __func__, kvm->arch.dsm_id, ret);
-#ifdef TARDIS_KVM_DSM
-	cleanup_srcu_struct(&kvm->arch.expiration_list_srcu);
-#endif
 }
 
 void kvm_dsm_free(struct kvm *kvm)
@@ -1065,12 +1029,6 @@ void kvm_dsm_free(struct kvm *kvm)
 
 	used_slots = slots->used_slots;
 	for (i = 0; i < used_slots; i++) {
-#ifdef KVM_DSM_DIFF
-		unsigned long j;
-		for (j = 0; j < slots->memslots[i].npages; j++) {
-			kfree(slots->memslots[i].vfn_dsm_state[j].diff.twin);
-		}
-#endif
 		kvm_dsm_free_rmap(kvm, &slots->memslots[i]);
 		kvfree(slots->memslots[i].vfn_dsm_state);
 	}
@@ -1090,9 +1048,7 @@ static int kvm_dsm_page_fault(struct kvm *kvm, struct kvm_memory_slot *memslot,
 	start = ts.tv_sec * 1000 * 1000 + ts.tv_nsec / 1000;
 #endif
 
-#ifdef IVY_KVM_DSM
 	ret = ivy_kvm_dsm_page_fault(kvm, memslot, gfn, is_smm, write);
-#endif
 
 #ifdef KVM_DSM_PF_PROFILE
 	ktime_get_real_ts64(&ts);
@@ -1182,7 +1138,7 @@ static int kvm_dsm_memcpy(struct kvm *kvm, unsigned long host_virt_addr,
 
 		mutex_lock(&kvm->arch.dsm_lock);
 		for (i = 0; i < npages; i++) {
-			dsm_lock(kvm, slot, vfn + i,NULL);
+			dsm_lock(slot, vfn + i);
 		}
 
 		for (i = 0; i < npages; i += gfn_npages) {
@@ -1231,7 +1187,7 @@ static int kvm_dsm_memcpy(struct kvm *kvm, unsigned long host_virt_addr,
 out_unlock:
 		for (i = 0; i < npages; i++) {
 			dsm_unlock_fast_path(slot, vfn + i, false);
-			dsm_unlock(kvm, slot, vfn + i,NULL);
+			dsm_unlock(slot, vfn + i);
 		}
 		mutex_unlock(&kvm->arch.dsm_lock);
 		if (ret < 0)
@@ -1278,7 +1234,7 @@ static int kvm_dsm_mempin(struct kvm *kvm, unsigned long host_virt_addr,
 
 		mutex_lock(&kvm->arch.dsm_lock);
 		for (i = 0; i < npages; i++) {
-			dsm_lock(kvm, slot, vfn + i,NULL);
+			dsm_lock(slot, vfn + i);
 		}
 
 		if (unpin) {
@@ -1323,7 +1279,7 @@ static int kvm_dsm_mempin(struct kvm *kvm, unsigned long host_virt_addr,
 out_unlock:
 		for (i = 0; i < npages; i++) {
 			dsm_unlock_fast_path(slot, vfn + i, false);
-			dsm_unlock(kvm, slot, vfn + i,NULL);
+			dsm_unlock(slot, vfn + i);
 		}
 		mutex_unlock(&kvm->arch.dsm_lock);
 		if (ret < 0)

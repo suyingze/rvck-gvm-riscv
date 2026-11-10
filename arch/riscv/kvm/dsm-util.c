@@ -35,7 +35,6 @@ int get_dsm_address(struct kvm *kvm, int dsm_id, struct dsm_address *addr)
 	if (addr == NULL) {
 		return -EINVAL;
 	}
-	// printk("get_dsm_address 34");
 	sprintf(addr->port, "%d", 37710 + dsm_id);
 	addr->host = kvm->arch.cluster_iplist[dsm_id];
 
@@ -47,7 +46,6 @@ int dsm_create_memslot(struct kvm_dsm_memory_slot *slot,
 {
 	unsigned long i;
 	int ret = 0;
-// printk("dsm_create_memslot");
 	slot->rmap = NULL;
 	slot->backup_rmap = NULL;
 	slot->rmap_lock = NULL;
@@ -83,9 +81,7 @@ int dsm_create_memslot(struct kvm_dsm_memory_slot *slot,
 	for (i = 0; i < npages; i++) {
 		INIT_HLIST_HEAD(&slot->rmap[i]);
 		INIT_HLIST_HEAD(&slot->backup_rmap[i]);
-#ifdef IVY_KVM_DSM
 		mutex_init(&slot->vfn_dsm_state[i].fast_path_lock);
-#endif
 		mutex_init(&slot->vfn_dsm_state[i].lock);
 	}
 
@@ -106,7 +102,6 @@ int insert_hvaslot(struct kvm_dsm_memslots *slots, int pos, hfn_t start,
 		gfn_t base_gfn, unsigned long npages)
 {
 	int ret, i;
-// printk("insert_hvaslot");
 	if (slots->used_slots == KVM_DSM_MAX_MEMSLOTS) {
 		printk(KERN_ERR "kvm-dsm: all slots are used, no more space for new hvaslot[%llu,%lu]\n",
 				start, npages);
@@ -129,8 +124,7 @@ int insert_hvaslot(struct kvm_dsm_memslots *slots, int pos, hfn_t start,
 	return 0;
 }
 
-void dsm_lock(struct kvm *kvm, struct kvm_dsm_memory_slot *slot,
-	hfn_t vfn, struct kvm_memory_slot *memslot)
+void dsm_lock(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
 {
 	unsigned long index;
 
@@ -138,48 +132,10 @@ void dsm_lock(struct kvm *kvm, struct kvm_dsm_memory_slot *slot,
 		return;
 
 	index = dsm_vfn_index(slot, vfn);
-
-#ifdef KVM_DSM_DEBUG
-	char cur_comm[TASK_COMM_LEN];
-#ifdef CONFIG_DEBUG_MUTEXES
-	char lock_owner_comm[TASK_COMM_LEN];
-#endif
-	int retry_cnt = 0;
-
-	retry_cnt = 0;
-	while (!mutex_trylock(&slot->vfn_dsm_state[index].lock)) {
-		usleep_range(10, 10);
-		retry_cnt++;
-		/* ~10s */
-		if (retry_cnt > 1000000) {
-			gfn_t gfn = __kvm_dsm_vfn_to_gfn(slot, false, vfn,
-							 NULL, NULL, NULL);
-			get_task_comm(cur_comm, current);
-#ifdef CONFIG_DEBUG_MUTEXES
-			get_task_comm(lock_owner_comm,
-				      slot->vfn_dsm_state[index].lock.owner);
-			printk(KERN_ERR "%s: task %s DEADLOCK (held by %s) on gfn[%llu] "
-					"vfn[%llu] caller %pf\n",
-					__func__, cur_comm, lock_owner_comm, gfn, vfn,
-					__builtin_return_address(0));
-#else
-			printk(KERN_ERR "%s: task %s DEADLOCK on gfn[%llu] "
-					"vfn[%llu] caller %pf\n",
-					__func__, cur_comm, gfn, vfn,
-					__builtin_return_address(0));
-#endif
-			retry_cnt = 0;
-		}
-	}
-	// printk("dsm_lock at gfn %llx",vfn - slot->base_vfn);
-
-#else
-	return mutex_lock(&slot->vfn_dsm_state[index].lock);
-#endif
+	mutex_lock(&slot->vfn_dsm_state[index].lock);
 }
 
-void dsm_unlock(struct kvm *kvm, struct kvm_dsm_memory_slot *slot, hfn_t vfn,
-		struct kvm_memory_slot *memslot)
+void dsm_unlock(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
 {
 	unsigned long idx;
 
@@ -203,156 +159,12 @@ static int __kvm_dsm_trylock(struct mutex *l)
        return 1;
 }
 
-int dsm_trylock(struct kvm *kvm, struct kvm_dsm_memory_slot *slot, hfn_t vfn)
+int dsm_trylock(struct kvm_dsm_memory_slot *slot, hfn_t vfn)
 {
        if (!dsm_vfn_valid(slot, vfn, __func__))
 	       return -EINVAL;
 
        return __kvm_dsm_trylock(&slot->vfn_dsm_state[dsm_vfn_index(slot, vfn)].lock);
-}
-
-int dsm_trylock_timeout(struct kvm *kvm, struct kvm_dsm_memory_slot *slot, hfn_t vfn,
-               int *retry_cnt, struct kvm_memory_slot *memslot)
-{
-#ifdef KVM_DSM_DEBUG
-       int ret;
-       char cur_comm[TASK_COMM_LEN];
-#ifdef CONFIG_DEBUG_MUTEXES
-       char lock_owner_comm[TASK_COMM_LEN];
-#endif
-       gfn_t gfn = __kvm_dsm_vfn_to_gfn(slot, false, vfn, NULL, NULL, NULL);
-
-       ret = dsm_trylock(kvm, slot, vfn);
-       if (ret == -EAGAIN && retry_cnt) {
-               (*retry_cnt)++;
-               if (*retry_cnt > 1000000) {
-                       get_task_comm(cur_comm, current);
-#ifdef CONFIG_DEBUG_MUTEXES
-                       get_task_comm(lock_owner_comm,
-				     slot->vfn_dsm_state[dsm_vfn_index(slot, vfn)].lock.owner);
-                       printk(KERN_ERR "%s: task %s DEADLOCK (held by %s) on gfn[%llu] "
-                                       "vfn[%llu] caller %pf\n",
-                                       __func__, cur_comm, lock_owner_comm, gfn, vfn,
-                                       __builtin_return_address(0));
-#else
-                       printk(KERN_ERR "%s: task %s DEADLOCK on gfn[%llu] "
-                                       "vfn[%llu] caller %pf\n",
-                                       __func__, cur_comm, gfn, vfn,
-                                       __builtin_return_address(0));
-#endif
-                       *retry_cnt = 0;
-               }
-               usleep_range(10, 10);
-       }
-	   return ret;
-#else
-       return dsm_trylock(kvm, slot, vfn);
-#endif
-}
-
-int dsm_encode_diff(struct kvm_dsm_memory_slot *slot, hfn_t vfn,
-		int msg_sender, char *page, struct kvm_memory_slot *memslot, gfn_t gfn,
-		uint16_t version)
-{
-	int length = PAGE_SIZE;
-#ifdef KVM_DSM_DIFF
-	char *twin = dsm_get_twin(slot, vfn);
-#endif
-
-#ifdef KVM_DSM_W_SHARED
-	/*
-	 * The same versions denote there is no need to fetch page (an ack is still
-	 * necessary).
-	 *
-	 * FIXME: At the initialization period, version of pages in kvm 0 should be
-	 * 1. However, due to the complexity of hvaslot initialization
-	 * (insert/remove, backup balabala...), it's not implemented yet.
-	 */
-	if (version >= 20 && version == dsm_get_version(slot, vfn)) {
-		return 0;
-	}
-#endif
-
-#ifdef KVM_DSM_DIFF
-	/* The requester's page is the same as our twin. We can diff them. */
-	if (twin && version == dsm_get_twin_version(slot, vfn)) {
-		char *diff = kmalloc(PAGE_SIZE, GFP_KERNEL);
-		if (!diff)
-			return length;
-		length = xbzrle_encode_buffer(twin, page, PAGE_SIZE, diff, PAGE_SIZE);
-		if (length >= PAGE_SIZE || length < 0) {
-			kfree(diff);
-			length = PAGE_SIZE;
-			return length;
-		}
-		memcpy(page, diff, length);
-		kfree(diff);
-	}
-#endif
-	return length;
-}
-
-void dsm_decode_diff(struct kvm *kvm, char *page, int resp_len,
-		struct kvm_memory_slot *memslot, gfn_t gfn)
-{
-#ifdef KVM_DSM_DIFF
-	char *buffer = NULL;
-	int length = 0;
-
-	if (resp_len == PAGE_SIZE)
-		return;
-
-	buffer = kmalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!buffer) {
-		/* A fetal bug that crash the system. */
-		BUG();
-	}
-	kvm_dsm_read_guest_page(kvm, memslot, gfn, buffer, 0, PAGE_SIZE);
-	length = xbzrle_decode_buffer(page, resp_len, buffer, PAGE_SIZE);
-	BUG_ON(length < 0);
-	memcpy(page, buffer, PAGE_SIZE);
-	kfree(buffer);
-#else
-	BUG_ON(resp_len != 0 && resp_len != PAGE_SIZE);
-#endif
-}
-
-void dsm_set_twin_conditionally(struct kvm *kvm, struct kvm_dsm_memory_slot *slot,
-		hfn_t vfn, char *page, struct kvm_memory_slot *memslot, gfn_t gfn,
-		bool is_owner, version_t version)
-{
-#ifdef KVM_DSM_DIFF
-	bool enable_diff = true;
-	char *twin = dsm_get_twin(slot, vfn);
-#ifdef KVM_DSM_PF_PROFILE
-	unsigned long index = vfn - slot->base_vfn;
-	if (atomic_read(&slot->vfn_dsm_state[index].read_pf)
-			+ atomic_read(&slot->vfn_dsm_state[index].write_pf) <= 20) {
-		enable_diff = false;
-	}
-#endif
-	if (enable_diff) {
-		/* Page not set if i'm owner. */
-		if (is_owner) {
-			kvm_dsm_read_guest_page(kvm, memslot, gfn, page, 0, PAGE_SIZE);
-		}
-		if (!twin) {
-			twin = kmalloc(PAGE_SIZE, GFP_KERNEL);
-			dsm_set_twin(slot, vfn, twin);
-		}
-		if (!twin) {
-			/* It's okay since it's equal to not use diff. */
-			printk(KERN_WARNING "%s: twin allocate failed\n", __func__);
-			return;
-		}
-		memcpy(twin, page, PAGE_SIZE);
-		/*
-		 * If any other nodes hold the same content, their versions can be
-		 * identified by camparision between twin_version and request version.
-		 */
-		dsm_set_twin_version(slot, vfn, version);
-	}
-#endif
 }
 
 int kvm_dsm_connect(struct kvm *kvm, int dest_id, kconnection_t **conn_sock)

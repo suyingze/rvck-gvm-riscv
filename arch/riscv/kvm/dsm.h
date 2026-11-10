@@ -6,13 +6,7 @@
 
 #include "dsm-util.h"
 
-#ifdef IVY_KVM_DSM
 #include "ivy.h"
-#elif defined(TARDIS_KVM_DSM)
-#include "tardis.h"
-#else
-#error "At least one DSM protocol should be appointed."
-#endif
 
 #ifdef CONFIG_KVM_DSM
 int kvm_dsm_acquire_page(struct kvm *kvm, struct kvm_memory_slot **slot,
