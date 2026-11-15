@@ -61,6 +61,20 @@
 
 struct kvm_vm_stat {
 	struct kvm_vm_stat_generic generic;
+#ifdef CONFIG_KVM_DSM
+	u64 dsm_pf_fast_read;
+	u64 dsm_pf_fast_write;
+	u64 dsm_pf_slow_read;
+	u64 dsm_pf_slow_write;
+	u64 dsm_pf_remote_fetch;
+	u64 dsm_pf_page_bytes;
+	u64 dsm_owner_acquire;
+	u64 dsm_invalidate_sent;
+	u64 dsm_req_read;
+	u64 dsm_req_write;
+	u64 dsm_req_invalidate;
+	u64 dsm_req_retry;
+#endif
 };
 
 struct kvm_vcpu_stat {

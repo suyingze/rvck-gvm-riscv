@@ -1006,6 +1006,22 @@ void kvm_dsm_stop(struct kvm *kvm)
 	if (ret < 0)
 		printk(KERN_ERR "%s: node-%d dsm root server exited with %d\n",
 		       __func__, kvm->arch.dsm_id, ret);
+
+	printk(KERN_INFO
+	       "kvm-dsm: node-%u stats pf_fast_read=%llu pf_fast_write=%llu pf_slow_read=%llu pf_slow_write=%llu remote_fetch=%llu page_bytes=%llu owner_acquire=%llu invalidate_sent=%llu req_read=%llu req_write=%llu req_invalidate=%llu req_retry=%llu\n",
+	       kvm->arch.dsm_id,
+	       (unsigned long long)kvm->stat.dsm_pf_fast_read,
+	       (unsigned long long)kvm->stat.dsm_pf_fast_write,
+	       (unsigned long long)kvm->stat.dsm_pf_slow_read,
+	       (unsigned long long)kvm->stat.dsm_pf_slow_write,
+	       (unsigned long long)kvm->stat.dsm_pf_remote_fetch,
+	       (unsigned long long)kvm->stat.dsm_pf_page_bytes,
+	       (unsigned long long)kvm->stat.dsm_owner_acquire,
+	       (unsigned long long)kvm->stat.dsm_invalidate_sent,
+	       (unsigned long long)kvm->stat.dsm_req_read,
+	       (unsigned long long)kvm->stat.dsm_req_write,
+	       (unsigned long long)kvm->stat.dsm_req_invalidate,
+	       (unsigned long long)kvm->stat.dsm_req_retry);
 }
 
 void kvm_dsm_free(struct kvm *kvm)

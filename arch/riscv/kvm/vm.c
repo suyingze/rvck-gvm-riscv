@@ -20,6 +20,21 @@
 
 const struct _kvm_stats_desc kvm_vm_stats_desc[] = {
 	KVM_GENERIC_VM_STATS()
+#ifdef CONFIG_KVM_DSM
+	, STATS_DESC_COUNTER(VM, dsm_pf_fast_read)
+	, STATS_DESC_COUNTER(VM, dsm_pf_fast_write)
+	, STATS_DESC_COUNTER(VM, dsm_pf_slow_read)
+	, STATS_DESC_COUNTER(VM, dsm_pf_slow_write)
+	, STATS_DESC_COUNTER(VM, dsm_pf_remote_fetch)
+	, STATS_DESC_CUMULATIVE(VM, dsm_pf_page_bytes, KVM_STATS_UNIT_BYTES,
+				KVM_STATS_BASE_POW2, 0)
+	, STATS_DESC_COUNTER(VM, dsm_owner_acquire)
+	, STATS_DESC_COUNTER(VM, dsm_invalidate_sent)
+	, STATS_DESC_COUNTER(VM, dsm_req_read)
+	, STATS_DESC_COUNTER(VM, dsm_req_write)
+	, STATS_DESC_COUNTER(VM, dsm_req_invalidate)
+	, STATS_DESC_COUNTER(VM, dsm_req_retry)
+#endif
 };
 static_assert(ARRAY_SIZE(kvm_vm_stats_desc) ==
 		sizeof(struct kvm_vm_stat) / sizeof(u64));

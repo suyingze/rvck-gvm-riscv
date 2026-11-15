@@ -25,6 +25,16 @@
  */
 #define KVM_DSM_RISCV_VIRT_RAM_BASE_GFN	(0x80000000ULL >> PAGE_SHIFT)
 
+/*
+ * VM DSM statistics are exported through the standard KVM stats/debugfs
+ * interface.  Fault and request handlers run concurrently, so update their
+ * naturally aligned u64 storage with atomic64 operations.
+ */
+#define kvm_dsm_stat_inc(kvm, field) \
+	atomic64_inc((atomic64_t *)&(kvm)->stat.field)
+#define kvm_dsm_stat_add(kvm, field, value) \
+	atomic64_add((value), (atomic64_t *)&(kvm)->stat.field)
+
 static inline bool kvm_dsm_memslot_is_ram(const struct kvm_memory_slot *slot)
 {
 	if (!slot || slot->id >= KVM_USER_MEM_SLOTS ||

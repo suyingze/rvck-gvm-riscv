@@ -287,6 +287,7 @@ static int kvm_dsm_invalidate(struct kvm *kvm, gfn_t gfn, bool is_smm,
 		/* Santiy check on copyset consistency. */
 		BUG_ON(holder >= kvm->arch.cluster_iplist_len);
 
+		kvm_dsm_stat_inc(kvm, dsm_invalidate_sent);
 		ret = kvm_dsm_fetch(kvm, holder, false, &req, &r, &resp);
 		if (ret < 0)
 			return ret;
@@ -654,6 +655,19 @@ int ivy_kvm_dsm_handle_req(void *data)
 			goto out;
 		}
 		memcpy(&req, req_buf, sizeof(req));
+		switch (req.req_type) {
+		case DSM_REQ_INVALIDATE:
+			kvm_dsm_stat_inc(kvm, dsm_req_invalidate);
+			break;
+		case DSM_REQ_READ:
+			kvm_dsm_stat_inc(kvm, dsm_req_read);
+			break;
+		case DSM_REQ_WRITE:
+			kvm_dsm_stat_inc(kvm, dsm_req_write);
+			break;
+		default:
+			break;
+		}
 
 		BUG_ON(req.requester == kvm->arch.dsm_id);
 		locked = false;
@@ -794,6 +808,7 @@ retry_handle_req:
 		srcu_read_unlock(&kvm->srcu, idx);
 
 		if (retry) {
+			kvm_dsm_stat_inc(kvm, dsm_req_retry);
 			retry = false;
 			schedule();
 			goto retry_handle_req;
@@ -926,6 +941,10 @@ int ivy_kvm_dsm_page_fault(struct kvm *kvm, struct kvm_memory_slot *memslot,
 	}
 
 	if (is_fast_path(kvm, slot, vfn, write)) {
+		if (write)
+			kvm_dsm_stat_inc(kvm, dsm_pf_fast_write);
+		else
+			kvm_dsm_stat_inc(kvm, dsm_pf_fast_read);
 		if (trace &&
 		    atomic_inc_return(&gvm_ivy_pf_log_count[log_node]) <= 256)
 			printk(KERN_INFO "GVM DSM ivy_pf: node=%u gfn=0x%llx vfn=0x%llx write=%d fast=1 state=0x%x owner=%d ret=0x%x\n",
@@ -943,6 +962,10 @@ int ivy_kvm_dsm_page_fault(struct kvm *kvm, struct kvm_memory_slot *memslot,
 			return KVM_DSM_ACCESS_READ;
 		}
 	}
+	if (write)
+		kvm_dsm_stat_inc(kvm, dsm_pf_slow_write);
+	else
+		kvm_dsm_stat_inc(kvm, dsm_pf_slow_read);
 
 	BUG_ON(dsm_is_initial(slot, vfn) && dsm_get_prob_owner(slot, vfn) != 0);
 
@@ -1000,6 +1023,7 @@ int ivy_kvm_dsm_page_fault(struct kvm *kvm, struct kvm_memory_slot *memslot,
 			 * or not. If not, forward the request to next probOwner until find
 			 * the true owner.
 			 */
+			kvm_dsm_stat_inc(kvm, dsm_pf_remote_fetch);
 			ret = resp_len = kvm_dsm_fetch(kvm, owner, false, &req, page,
 					&resp);
 			if (ret < 0){
@@ -1014,6 +1038,9 @@ int ivy_kvm_dsm_page_fault(struct kvm *kvm, struct kvm_memory_slot *memslot,
 			}
 
 			dsm_set_version(slot, vfn, resp.version + 1);
+			kvm_dsm_stat_inc(kvm, dsm_owner_acquire);
+			if (resp_len > 0)
+				kvm_dsm_stat_add(kvm, dsm_pf_page_bytes, resp_len);
 		}
 
 		dsm_clear_copyset(slot, vfn);
@@ -1062,12 +1089,16 @@ int ivy_kvm_dsm_page_fault(struct kvm *kvm, struct kvm_memory_slot *memslot,
 			goto out;
 		}
 		/* Ask the probOwner */
+		kvm_dsm_stat_inc(kvm, dsm_pf_remote_fetch);
 		ret = resp_len = kvm_dsm_fetch(kvm, owner, false, &req, page, &resp);
 		if (ret < 0){
 			dsm_debug_v("kvm fetch error");
 			goto out_error;
 		}
 		dsm_set_version(slot, vfn, resp.version);
+		kvm_dsm_stat_inc(kvm, dsm_owner_acquire);
+		if (resp_len > 0)
+			kvm_dsm_stat_add(kvm, dsm_pf_page_bytes, resp_len);
 		memcpy(dsm_get_copyset(slot, vfn), &resp.inv_copyset, sizeof(copyset_t));
 		dsm_add_to_copyset(slot, vfn, kvm->arch.dsm_id);
 
