@@ -62,3 +62,40 @@ parallel efficiency = speedup / 2
 
 The checksum for every repeat must match between the two-worker and
 four-worker cases and between the pthread and MPI builds.
+
+## Two ordinary VMs over TCP
+
+`bsp-compute-tcp.c` runs the same compute kernel in two independent VMs.  Each
+VM owns two pinned pthread workers and their private buffers.  At every BSP
+step, the two local workers first meet at a pthread barrier, then one leader
+per VM exchanges an eight-byte sequence value over TCP, and finally both local
+workers are released.  The server reports time for all four workers and XORs
+the checksum received from the client into its local checksum.
+
+Build inside a RISC-V guest (or cross-compile it for the guest):
+
+```sh
+gcc -O3 -Wall -Wextra -Werror -std=gnu11 -pthread \
+  bsp-compute-tcp.c -o bsp-compute-tcp
+```
+
+Start the client VM first, using global worker indexes 2 and 3:
+
+```sh
+./bsp-compute-tcp --role client --peer 172.30.0.2 --port 42000 \
+  --cpus 0,1 --global-workers 4 --worker-offset 2 \
+  --elements 512 --rounds 1000 --steps 50 --warmup 5 --repeats 7
+```
+
+Then start the server VM, using global worker indexes 0 and 1:
+
+```sh
+./bsp-compute-tcp --role server --port 42000 \
+  --cpus 0,1 --global-workers 4 --worker-offset 0 \
+  --elements 512 --rounds 1000 --steps 50 --warmup 5 --repeats 7
+```
+
+This is an explicit TCP message-passing baseline, not an Open MPI result.  It
+is useful for a virtualization-matched comparison against one 2+2-vCPU
+GiantVM: both sides use KVM guests and the same physical TCP link, while their
+memory and synchronization models intentionally differ.
