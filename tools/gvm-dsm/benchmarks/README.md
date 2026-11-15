@@ -25,3 +25,40 @@ gcc -O2 -Wall -Wextra -std=gnu11 -pthread \
 ./dsm-page-pingpong --cpu-a 0 --cpu-b 2 \
   --iterations 1000 --warmup 100 --repeats 7 --compute 10000
 ```
+
+## BSP compute/barrier comparison
+
+`bsp-compute-bench.c` provides two builds of the same private-buffer compute
+kernel.  The default pthread build runs inside one GiantVM guest and uses a
+pthread barrier.  The MPI build uses MPI ranks and an MPI barrier.  Keeping a
+fixed global element count while changing from two local workers to four
+workers split across two hosts gives a directly comparable strong-scaling
+test.
+
+Build both variants:
+
+```sh
+gcc -O3 -Wall -Wextra -Werror -std=gnu11 -pthread \
+  bsp-compute-bench.c -o bsp-compute-pthread
+
+mpicc -O3 -Wall -Wextra -Werror -std=gnu11 -DUSE_MPI \
+  bsp-compute-bench.c -o bsp-compute-mpi
+```
+
+`run-bsp-pthread-scan.sh` scans the GiantVM guest with workers on CPUs 0/1 and
+then 0/1/2/3.  `run-bsp-mpi-scan.sh` runs the corresponding Open MPI + UCX
+scan on the two hosts.  The two rankfiles pin MPI ranks to host CPUs 2 and 3.
+The site-specific defaults in the MPI runner can be replaced with environment
+variables; in particular `NODE0_HOST`, `NODE1_HOST`, `OMPI_PREFIX`, `BENCH`,
+`UCX_DEVICE`, and the rankfile paths.
+
+Both runners scan 1, 10, 100, 1000, and 10000 compute rounds between barriers.
+Compare medians within each backend using:
+
+```text
+speedup = local two-worker elapsed / cross-host four-worker elapsed
+parallel efficiency = speedup / 2
+```
+
+The checksum for every repeat must match between the two-worker and
+four-worker cases and between the pthread and MPI builds.
