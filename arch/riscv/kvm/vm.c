@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/kvm_host.h>
+#include <asm/delay.h>
 #include <asm/kvm_mmu.h>
 #include <asm/timex.h>
 
@@ -289,6 +290,8 @@ static int kvm_riscv_dsm_hsm_start(struct kvm *kvm,
 	u64 new_time_delta;
 	u64 host_cycles;
 	u64 guest_cycles;
+	u64 source_guest_cycles;
+	u32 target_delay_cycles = 0;
 	bool timer_synced_now = false;
 	int ret = 0;
 
@@ -311,6 +314,18 @@ static int kvm_riscv_dsm_hsm_start(struct kvm *kvm,
 	}
 
 	host_cycles = get_cycles64();
+	source_guest_cycles = params->guest_cycles;
+	if (params->pad) {
+		/*
+		 * Userspace samples the target counter with the source Guest
+		 * counter.  Account for time spent synchronizing the remote HSM
+		 * page before this ioctl can apply the timer offset.  A u32
+		 * subtraction deliberately handles one low-word wrap; this path
+		 * is expected to complete far inside that interval.
+		 */
+		target_delay_cycles = (u32)host_cycles - params->pad;
+		source_guest_cycles += target_delay_cycles;
+	}
 	spin_lock(&kvm->arch.dsm_timer_lock);
 	old_time_delta = kvm->arch.timer.time_delta;
 	if (!kvm->arch.dsm_timer_synced) {
@@ -320,7 +335,7 @@ static int kvm_riscv_dsm_hsm_start(struct kvm *kvm,
 		 * Synchronize once per VM so later HSM starts cannot move time
 		 * backwards because of network-latency jitter.
 		 */
-		new_time_delta = params->guest_cycles - host_cycles;
+		new_time_delta = source_guest_cycles - host_cycles;
 		WRITE_ONCE(kvm->arch.timer.time_delta, new_time_delta);
 		kvm->arch.dsm_timer_synced = true;
 		timer_synced_now = true;
@@ -329,13 +344,15 @@ static int kvm_riscv_dsm_hsm_start(struct kvm *kvm,
 	spin_unlock(&kvm->arch.dsm_timer_lock);
 
 	if (timer_synced_now)
-		pr_info("kvm-riscv-dsm: timer sync source_guest_cycles=%llu old_time_delta=%lld new_time_delta=%lld\n",
-			params->guest_cycles, (s64)old_time_delta,
+		pr_info("kvm-riscv-dsm: timer sync source_guest_cycles=%llu adjusted_guest_cycles=%llu target_delay_cycles=%u old_time_delta=%lld new_time_delta=%lld\n",
+			params->guest_cycles, source_guest_cycles,
+			target_delay_cycles, (s64)old_time_delta,
 			(s64)kvm->arch.timer.time_delta);
 
-	pr_info("kvm-riscv-dsm: hsm receive source=%u target=%u host_cycles=%llu guest_cycles=%llu source_guest_cycles=%llu time_delta=%lld synced_now=%u\n",
+	pr_info("kvm-riscv-dsm: hsm receive source=%u target=%u host_cycles=%llu guest_cycles=%llu source_guest_cycles=%llu adjusted_guest_cycles=%llu target_delay_cycles=%u time_delta=%lld synced_now=%u\n",
 		params->vcpu_id, params->target_vcpu_id, host_cycles,
 		guest_cycles, params->guest_cycles,
+		source_guest_cycles, target_delay_cycles,
 		(s64)kvm->arch.timer.time_delta, timer_synced_now);
 
 	reset_cntx = &target_vcpu->arch.guest_reset_context;
@@ -349,6 +366,70 @@ static int kvm_riscv_dsm_hsm_start(struct kvm *kvm,
 out:
 	spin_unlock(&target_vcpu->arch.mp_state_lock);
 	return ret;
+}
+
+static void kvm_riscv_dsm_clock_get(struct kvm *kvm,
+				    struct kvm_dsm_riscv_clock *params)
+{
+	u64 host_cycles = get_cycles64();
+
+	spin_lock(&kvm->arch.dsm_timer_lock);
+	params->guest_cycles = host_cycles + kvm->arch.timer.time_delta;
+	spin_unlock(&kvm->arch.dsm_timer_lock);
+	params->frequency = riscv_timebase;
+	params->target_host_cycles_low = 0;
+	params->flags = 0;
+	params->error_cycles = 0;
+	params->applied_cycles = 0;
+}
+
+static int kvm_riscv_dsm_clock_sync(struct kvm *kvm,
+				     struct kvm_dsm_riscv_clock *params)
+{
+	u64 source_guest_cycles;
+	u64 target_guest_cycles;
+	u64 max_step;
+	u64 applied_cycles = 0;
+	u64 host_cycles;
+	s64 error_cycles;
+	u32 target_delay_cycles;
+
+	if (!params->frequency || params->frequency != riscv_timebase)
+		return -EINVAL;
+
+	host_cycles = get_cycles64();
+	target_delay_cycles = (u32)host_cycles -
+		params->target_host_cycles_low;
+	source_guest_cycles = params->guest_cycles + target_delay_cycles;
+
+	spin_lock(&kvm->arch.dsm_timer_lock);
+	target_guest_cycles = host_cycles + kvm->arch.timer.time_delta;
+	error_cycles = (s64)(source_guest_cycles - target_guest_cycles);
+	/*
+	 * Never move a running Guest clock backwards.  The current two-node
+	 * deployment uses the faster host as its clock master, so normal drift
+	 * corrections are small forward steps.  Bound a single step to 10 ms to
+	 * keep a delayed or corrupt control message from causing a large jump.
+	 */
+	if (error_cycles > 0) {
+		max_step = max_t(u64, 1, riscv_timebase / 100);
+		applied_cycles = min_t(u64, error_cycles, max_step);
+		kvm->arch.timer.time_delta += applied_cycles;
+		params->flags |= KVM_DSM_RISCV_CLOCK_APPLIED;
+	} else {
+		params->flags &= ~KVM_DSM_RISCV_CLOCK_APPLIED;
+	}
+	spin_unlock(&kvm->arch.dsm_timer_lock);
+
+	params->error_cycles = error_cycles;
+	params->applied_cycles = applied_cycles;
+	if (applied_cycles)
+		kvm_make_all_cpus_request(kvm, KVM_REQ_DSM_TIMER_UPDATE);
+
+	pr_info("kvm-riscv-dsm: periodic clock sync source_guest_cycles=%llu target_guest_cycles=%llu target_delay_cycles=%u error_cycles=%lld applied_cycles=%llu\n",
+		source_guest_cycles, target_guest_cycles, target_delay_cycles,
+		error_cycles, applied_cycles);
+	return 0;
 }
 #endif
 
@@ -381,6 +462,27 @@ int kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
 		if (copy_from_user(&params, argp, sizeof(params)))
 			return -EFAULT;
 		return kvm_riscv_dsm_hsm_start(kvm, &params);
+	}
+	case KVM_DSM_CLOCK_GET: {
+		struct kvm_dsm_riscv_clock params = {};
+
+		kvm_riscv_dsm_clock_get(kvm, &params);
+		if (copy_to_user(argp, &params, sizeof(params)))
+			return -EFAULT;
+		return 0;
+	}
+	case KVM_DSM_CLOCK_SYNC: {
+		struct kvm_dsm_riscv_clock params;
+		int ret;
+
+		if (copy_from_user(&params, argp, sizeof(params)))
+			return -EFAULT;
+		ret = kvm_riscv_dsm_clock_sync(kvm, &params);
+		if (ret)
+			return ret;
+		if (copy_to_user(argp, &params, sizeof(params)))
+			return -EFAULT;
+		return 0;
 	}
 #endif
 	}

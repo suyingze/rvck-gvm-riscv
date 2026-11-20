@@ -776,6 +776,9 @@ static void kvm_riscv_check_vcpu_requests(struct kvm_vcpu *vcpu)
 
 		if (kvm_check_request(KVM_REQ_STEAL_UPDATE, vcpu))
 			kvm_riscv_vcpu_record_steal_time(vcpu);
+
+		if (kvm_check_request(KVM_REQ_DSM_TIMER_UPDATE, vcpu))
+			kvm_riscv_vcpu_timer_restore(vcpu);
 	}
 }
 

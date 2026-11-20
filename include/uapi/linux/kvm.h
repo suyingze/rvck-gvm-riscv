@@ -299,6 +299,7 @@ struct kvm_dsm_riscv_hsm {
 	__u32 vcpu_id;
 	__u32 target_vcpu_id;
 	__u32 source_dsm_id;
+	/* Low 32 bits of the target host counter at guest_cycles sampling. */
 	__u32 pad;
 	__u64 start_addr;
 	__u64 opaque;
@@ -306,8 +307,26 @@ struct kvm_dsm_riscv_hsm {
 	__u64 guest_cycles;
 };
 
+struct kvm_dsm_riscv_clock {
+	/* Source Guest counter, adjusted to the target sampling instant. */
+	__u64 guest_cycles;
+	__u64 frequency;
+	/* Low 32 bits of the target host counter at guest_cycles sampling. */
+	__u32 target_host_cycles_low;
+	/* KVM_DSM_RISCV_CLOCK_* output flags. */
+	__u32 flags;
+	/* Signed source-minus-target error observed by KVM. */
+	__s64 error_cycles;
+	/* Non-negative forward correction applied by KVM. */
+	__u64 applied_cycles;
+};
+
+#define KVM_DSM_RISCV_CLOCK_APPLIED	(1U << 0)
+
 #define KVM_DSM_IPI _IOW(KVMIO, 0xf3, struct kvm_dsm_riscv_ipi)
 #define KVM_DSM_HSM_START _IOW(KVMIO, 0xf4, struct kvm_dsm_riscv_hsm)
+#define KVM_DSM_CLOCK_GET _IOR(KVMIO, 0xf5, struct kvm_dsm_riscv_clock)
+#define KVM_DSM_CLOCK_SYNC _IOWR(KVMIO, 0xf6, struct kvm_dsm_riscv_clock)
 
 /* for KVM_RUN, returned by mmap(vcpu_fd, offset=0) */
 struct kvm_run {
